@@ -11,3 +11,4 @@ dataset/*.parquet
 
 dataset/.DS_Store
 .DS_Store
+dataset/
