@@ -1,16 +1,23 @@
 import argparse
-import random
 from pathlib import Path
 
 import pandas as pd
 
+from candidate_generation import generate_candidates
+
 
 SEED = 42
+
 N_POSITIVES = 5000
 N_NEGATIVES = 15000
 
 
+# ----------------------------------------------------------------------
+# Load source data
+# ----------------------------------------------------------------------
+
 def load_data(dataset_dir):
+
     dataset_dir = Path(dataset_dir)
 
     source1 = pd.read_csv(
@@ -55,248 +62,113 @@ def load_data(dataset_dir):
         dtype=str,
     )
 
-    return source1, source2, source3, ground_truth
+    return (
+        source1,
+        source2,
+        source3,
+        ground_truth,
+    )
 
 
-def build_lookup(df):
-    """
-    Convert a source dataframe into:
-        entity_id -> record
-    """
-    return df.set_index("entity_id").to_dict("index")
-
+# ----------------------------------------------------------------------
+# Ground truth
+# ----------------------------------------------------------------------
 
 def parse_ground_truth(ground_truth):
-    """
-    Convert ground truth into:
-
-        S1 ID -> set of matched S2/S3 IDs
-    """
 
     matches = {}
 
     for _, row in ground_truth.iterrows():
+
         s1_id = row["source1_entity_id"]
         matched = row["matched_entity_ids"]
 
         if pd.isna(matched) or not str(matched).strip():
+
             matches[s1_id] = set()
+
         else:
-            matches[s1_id] = set(
-                str(matched).split(",")
-            )
+
+            matches[s1_id] = {
+                x.strip()
+                for x in str(matched).split(",")
+                if x.strip()
+            }
 
     return matches
 
 
-def build_positive_pairs(
-    ground_truth,
-    source1_lookup,
-    source2_lookup,
-    source3_lookup,
-    n_positive,
-    rng,
+# ----------------------------------------------------------------------
+# Build candidate labels
+# ----------------------------------------------------------------------
+
+def label_candidates(
+    candidates,
+    ground_truth_matches,
 ):
     """
-    Build real Source1 -> Source2/Source3 matches.
+    Label generated candidate pairs.
+
+    1 = true match
+    0 = candidate but not a true match
     """
 
-    all_positive_pairs = []
+    labels = []
 
-    for _, row in ground_truth.iterrows():
+    for _, row in candidates.iterrows():
 
         s1_id = row["source1_entity_id"]
-        matched_ids = row["matched_entity_ids"]
+        candidate_id = row["candidate_entity_id"]
 
-        if pd.isna(matched_ids):
-            continue
-
-        for other_id in str(matched_ids).split(","):
-
-            other_id = other_id.strip()
-
-            if other_id.startswith("S2-"):
-                other_lookup = source2_lookup
-                other_source = "S2"
-
-            elif other_id.startswith("S3-"):
-                other_lookup = source3_lookup
-                other_source = "S3"
-
-            else:
-                continue
-
-            if s1_id not in source1_lookup:
-                continue
-
-            if other_id not in other_lookup:
-                continue
-
-            all_positive_pairs.append(
-                (
-                    s1_id,
-                    other_id,
-                    other_source,
-                )
-            )
-
-    print(f"Total available positive pairs: {len(all_positive_pairs):,}")
-
-    if len(all_positive_pairs) < n_positive:
-        raise ValueError(
-            f"Only {len(all_positive_pairs)} positive pairs available."
-        )
-
-    selected = rng.sample(
-        all_positive_pairs,
-        n_positive,
-    )
-
-    return selected
-
-
-def build_country_index(source2, source3):
-    """
-    country -> list of S2/S3 entity IDs
-    """
-
-    country_index = {}
-
-    for df in [source2, source3]:
-
-        for _, row in df.iterrows():
-
-            country = row["country"]
-
-            if pd.isna(country):
-                continue
-
-            country = str(country).strip().lower()
-
-            if not country:
-                continue
-
-            country_index.setdefault(country, []).append(
-                row["entity_id"]
-            )
-
-    return country_index
-
-
-def build_negative_pairs(
-    source1,
-    source2,
-    source3,
-    ground_truth_matches,
-    n_negative,
-    rng,
-):
-    """
-    Generate same-country pairs that are NOT true matches.
-    """
-
-    source2_lookup = build_lookup(source2)
-    source3_lookup = build_lookup(source3)
-
-    country_index = build_country_index(
-        source2,
-        source3,
-    )
-
-    s1_lookup = build_lookup(source1)
-
-    # Only Source1 entities whose country has candidate records.
-    eligible_s1 = []
-
-    for s1_id, record in s1_lookup.items():
-
-        country = record["country"]
-
-        if pd.isna(country):
-            continue
-
-        country = str(country).strip().lower()
-
-        if country in country_index:
-            eligible_s1.append(
-                (s1_id, country)
-            )
-
-    print(
-        f"Eligible Source1 entities for negatives: "
-        f"{len(eligible_s1):,}"
-    )
-
-    negatives = []
-    seen = set()
-
-    attempts = 0
-    max_attempts = n_negative * 20
-
-    while len(negatives) < n_negative:
-
-        attempts += 1
-
-        if attempts > max_attempts:
-            raise RuntimeError(
-                "Could not generate enough valid negative pairs."
-            )
-
-        s1_id, country = rng.choice(eligible_s1)
-
-        candidate_ids = country_index[country]
-
-        other_id = rng.choice(candidate_ids)
-
-        pair_key = (s1_id, other_id)
-
-        # Avoid duplicate negative pairs.
-        if pair_key in seen:
-            continue
-
-        # Make sure this is not an actual match.
         true_matches = ground_truth_matches.get(
             s1_id,
             set(),
         )
 
-        if other_id in true_matches:
-            continue
-
-        if other_id.startswith("S2-"):
-            other_source = "S2"
-        elif other_id.startswith("S3-"):
-            other_source = "S3"
+        if candidate_id in true_matches:
+            labels.append(1)
         else:
-            continue
+            labels.append(0)
 
-        seen.add(pair_key)
+    candidates = candidates.copy()
 
-        negatives.append(
-            (
-                s1_id,
-                other_id,
-                other_source,
-            )
-        )
+    candidates["label"] = labels
 
-    return negatives
+    return candidates
 
 
-def pairs_to_dataframe(
-    pairs,
+# ----------------------------------------------------------------------
+# Attach actual records
+# ----------------------------------------------------------------------
+
+def build_lookup(df):
+
+    return df.set_index(
+        "entity_id"
+    ).to_dict("index")
+
+
+def attach_records(
+    candidates,
     source1_lookup,
     source2_lookup,
     source3_lookup,
-    label,
 ):
+    """
+    Convert candidate IDs into actual business records.
+    """
+
     rows = []
 
-    for s1_id, other_id, other_source in pairs:
+    for _, candidate in candidates.iterrows():
+
+        s1_id = candidate["source1_entity_id"]
+        other_id = candidate["candidate_entity_id"]
+        source = candidate["candidate_source"]
 
         s1 = source1_lookup[s1_id]
 
-        if other_source == "S2":
+        if source == "S2":
             other = source2_lookup[other_id]
         else:
             other = source3_lookup[other_id]
@@ -305,21 +177,110 @@ def pairs_to_dataframe(
             {
                 "s1_id": s1_id,
                 "other_id": other_id,
-                "other_source": other_source,
+                "other_source": source,
+
                 "s1_name": s1["business_name"],
                 "other_name": other["business_name"],
+
                 "s1_address": s1["business_address"],
                 "other_address": other["business_address"],
+
                 "s1_country": s1["country"],
                 "other_country": other["country"],
-                "label": label,
+
+                "matched_on_name": candidate[
+                    "matched_on_name"
+                ],
+
+                "matched_on_address": candidate[
+                    "matched_on_address"
+                ],
+
+                "label": candidate["label"],
             }
         )
 
     return pd.DataFrame(rows)
 
 
+# ----------------------------------------------------------------------
+# Sample balanced prototype dataset
+# ----------------------------------------------------------------------
+
+def sample_training_pairs(
+    candidates,
+    n_positive,
+    n_negative,
+):
+    """
+    Sample positives and negatives from the generated
+    candidate pool.
+    """
+
+    positives = candidates[
+        candidates["label"] == 1
+    ]
+
+    negatives = candidates[
+        candidates["label"] == 0
+    ]
+
+    print(
+        f"Available candidate positives: "
+        f"{len(positives):,}"
+    )
+
+    print(
+        f"Available candidate negatives: "
+        f"{len(negatives):,}"
+    )
+
+    if len(positives) < n_positive:
+
+        raise ValueError(
+            f"Only {len(positives):,} positive candidates "
+            f"available; need {n_positive:,}."
+        )
+
+    if len(negatives) < n_negative:
+
+        raise ValueError(
+            f"Only {len(negatives):,} negative candidates "
+            f"available; need {n_negative:,}."
+        )
+
+    positive_sample = positives.sample(
+        n=n_positive,
+        random_state=SEED,
+    )
+
+    negative_sample = negatives.sample(
+        n=n_negative,
+        random_state=SEED,
+    )
+
+    result = pd.concat(
+        [
+            positive_sample,
+            negative_sample,
+        ],
+        ignore_index=True,
+    )
+
+    result = result.sample(
+        frac=1,
+        random_state=SEED,
+    ).reset_index(drop=True)
+
+    return result
+
+
+# ----------------------------------------------------------------------
+# Main
+# ----------------------------------------------------------------------
+
 def main():
+
     parser = argparse.ArgumentParser()
 
     parser.add_argument(
@@ -331,92 +292,134 @@ def main():
     parser.add_argument(
         "--out",
         default="prototype_data/feature_pairs.csv",
-        help="Output CSV path",
+        help="Output feature-pair CSV path",
+    )
+
+    parser.add_argument(
+        "--max-block-size",
+        type=int,
+        default=2000,
+        help="Maximum allowed block size",
     )
 
     args = parser.parse_args()
 
-    rng = random.Random(SEED)
-
     print("Loading dataset...")
 
-    source1, source2, source3, ground_truth = load_data(
-        args.dataset_dir
+    (
+        source1,
+        source2,
+        source3,
+        ground_truth,
+    ) = load_data(args.dataset_dir)
+
+    print(
+        f"Source1 rows: {len(source1):,}"
     )
 
-    print(f"Source1 rows: {len(source1):,}")
-    print(f"Source2 rows: {len(source2):,}")
-    print(f"Source3 rows: {len(source3):,}")
-    print(f"Ground truth rows: {len(ground_truth):,}")
+    print(
+        f"Source2 rows: {len(source2):,}"
+    )
 
-    source1_lookup = build_lookup(source1)
-    source2_lookup = build_lookup(source2)
-    source3_lookup = build_lookup(source3)
+    print(
+        f"Source3 rows: {len(source3):,}"
+    )
+
+    print(
+        f"Ground truth rows: {len(ground_truth):,}"
+    )
+
+    # --------------------------------------------------------------
+    # Ground truth lookup
+    # --------------------------------------------------------------
 
     ground_truth_matches = parse_ground_truth(
         ground_truth
     )
 
-    print("\nBuilding positive pairs...")
+    # --------------------------------------------------------------
+    # Candidate generation
+    # --------------------------------------------------------------
 
-    positives = build_positive_pairs(
-        ground_truth,
-        source1_lookup,
-        source2_lookup,
-        source3_lookup,
-        N_POSITIVES,
-        rng,
-    )
+    print("\nGenerating candidates...")
 
-    print(
-        f"Selected positive pairs: "
-        f"{len(positives):,}"
-    )
-
-    print("\nBuilding negative pairs...")
-
-    negatives = build_negative_pairs(
+    candidates = generate_candidates(
         source1,
         source2,
         source3,
-        ground_truth_matches,
-        N_NEGATIVES,
-        rng,
+        max_block_size=args.max_block_size,
     )
 
     print(
-        f"Selected negative pairs: "
-        f"{len(negatives):,}"
+        f"\nTotal generated candidates: "
+        f"{len(candidates):,}"
     )
 
-    positive_df = pairs_to_dataframe(
-        positives,
+    # --------------------------------------------------------------
+    # Label candidates
+    # --------------------------------------------------------------
+
+    print("\nLabeling candidates...")
+
+    candidates = label_candidates(
+        candidates,
+        ground_truth_matches,
+    )
+
+    print(
+        f"Positive candidates: "
+        f"{(candidates['label'] == 1).sum():,}"
+    )
+
+    print(
+        f"Negative candidates: "
+        f"{(candidates['label'] == 0).sum():,}"
+    )
+
+    # --------------------------------------------------------------
+    # Sample prototype dataset
+    # --------------------------------------------------------------
+
+    print("\nSampling prototype dataset...")
+
+    candidates = sample_training_pairs(
+        candidates,
+        n_positive=N_POSITIVES,
+        n_negative=N_NEGATIVES,
+    )
+
+    print(
+        f"Selected prototype pairs: "
+        f"{len(candidates):,}"
+    )
+
+    # --------------------------------------------------------------
+    # Lookups
+    # --------------------------------------------------------------
+
+    source1_lookup = build_lookup(source1)
+    source2_lookup = build_lookup(source2)
+    source3_lookup = build_lookup(source3)
+
+    # --------------------------------------------------------------
+    # Attach records
+    # --------------------------------------------------------------
+
+    print("\nAttaching source records...")
+
+    result = attach_records(
+        candidates,
         source1_lookup,
         source2_lookup,
         source3_lookup,
-        label=1,
     )
 
-    negative_df = pairs_to_dataframe(
-        negatives,
-        source1_lookup,
-        source2_lookup,
-        source3_lookup,
-        label=0,
-    )
-
-    result = pd.concat(
-        [positive_df, negative_df],
-        ignore_index=True,
-    )
-
-    # Shuffle the final dataset.
-    result = result.sample(
-        frac=1,
-        random_state=SEED,
-    ).reset_index(drop=True)
+    # --------------------------------------------------------------
+    # Save
+    # --------------------------------------------------------------
 
     output_path = Path(args.out)
+
     output_path.parent.mkdir(
         parents=True,
         exist_ok=True,
@@ -428,14 +431,38 @@ def main():
     )
 
     print("\nDone.")
-    print(f"Saved: {output_path}")
-    print(f"Total pairs: {len(result):,}")
+
+    print(
+        f"Saved: {output_path}"
+    )
+
+    print(
+        f"Total pairs: {len(result):,}"
+    )
+
     print("\nLabel distribution:")
-    print(result["label"].value_counts())
+
+    print(
+        result["label"].value_counts()
+    )
+
     print("\nSource distribution:")
-    print(result["other_source"].value_counts())
+
+    print(
+        result["other_source"].value_counts()
+    )
+
+    print("\nCandidate block information:")
+
+    print(
+        result[
+            [
+                "matched_on_name",
+                "matched_on_address",
+            ]
+        ].value_counts()
+    )
 
 
 if __name__ == "__main__":
     main()
-    

@@ -6,6 +6,7 @@ from features import (
     configure_tfidf,
     extract_features,
 )
+
 from normalize import normalize_name
 
 
@@ -14,6 +15,7 @@ OUTPUT_PATH = Path("prototype_data/features_prototype.csv")
 
 
 def main():
+
     print("Loading prototype pairs...")
 
     df = pd.read_csv(INPUT_PATH)
@@ -21,7 +23,7 @@ def main():
     print(f"Loaded {len(df):,} pairs.")
 
     # ---------------------------------------------------------
-    # 1. Normalize all names for TF-IDF fitting
+    # 1. Prepare TF-IDF corpus
     # ---------------------------------------------------------
 
     print("Preparing TF-IDF corpus...")
@@ -34,7 +36,6 @@ def main():
         ignore_index=True,
     )
 
-    # Remove completely empty names.
     normalized_names = normalized_names[
         normalized_names != ""
     ]
@@ -69,10 +70,8 @@ def main():
             address1=row["s1_address"],
             name2=row["other_name"],
             address2=row["other_address"],
-            country=(
-                row["s1_country"],
-                row["other_country"],
-            ),
+            country1=row["s1_country"],
+            country2=row["other_country"],
         )
 
         feature_rows.append(features)
@@ -86,25 +85,7 @@ def main():
     features_df = pd.DataFrame(feature_rows)
 
     # ---------------------------------------------------------
-    # 4. Fix country_match
-    # ---------------------------------------------------------
-
-    features_df["country_match"] = (
-        df["s1_country"]
-        .fillna("")
-        .astype(str)
-        .str.strip()
-        .str.lower()
-        ==
-        df["other_country"]
-        .fillna("")
-        .astype(str)
-        .str.strip()
-        .str.lower()
-    ).astype(int)
-
-    # ---------------------------------------------------------
-    # 5. Combine IDs, labels and features
+    # 4. Combine IDs, labels and features
     # ---------------------------------------------------------
 
     output = pd.concat(
@@ -117,13 +98,14 @@ def main():
                     "label",
                 ]
             ].reset_index(drop=True),
+
             features_df.reset_index(drop=True),
         ],
         axis=1,
     )
 
     # ---------------------------------------------------------
-    # 6. Save
+    # 5. Save
     # ---------------------------------------------------------
 
     OUTPUT_PATH.parent.mkdir(
@@ -141,6 +123,7 @@ def main():
     print(f"Rows: {len(output):,}")
 
     print("\nFeature columns:")
+
     for column in features_df.columns:
         print(f"  - {column}")
 

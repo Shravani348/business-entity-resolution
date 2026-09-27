@@ -1,43 +1,107 @@
 import re
+import unicodedata
+
 import pandas as pd
 
-def clean_text(text):
-    if pd.isna(text) or text is None:
+
+MIN_TOKEN_LEN = 3
+
+
+NAME_REPLACEMENTS = {
+    "pvt": "private",
+    "ltd": "limited",
+    "corp": "corporation",
+    "co": "company",
+    "inc": "incorporated",
+}
+
+
+ADDRESS_REPLACEMENTS = {
+    "rd": "road",
+    "st": "street",
+    "ave": "avenue",
+    "av": "avenue",
+    "blvd": "boulevard",
+    "ln": "lane",
+    "dr": "drive",
+    "hwy": "highway",
+}
+
+
+def normalize_text(text):
+    """
+    Lowercase, Unicode-normalize, remove punctuation,
+    and collapse whitespace.
+    """
+    if pd.isna(text):
         return ""
-    text = str(text).lower()
-    # Keep only alphanumeric and spaces
-    text = re.sub(r'[^a-z0-9\s]', ' ', text)
-    # Remove extra spaces
-    text = re.sub(r'\s+', ' ', text).strip()
+
+    text = str(text).strip().lower()
+    text = unicodedata.normalize("NFKC", text)
+    text = re.sub(r"[^\w\s]", " ", text, flags=re.UNICODE)
+    text = re.sub(r"\s+", " ", text).strip()
+
     return text
 
-def remove_suffixes(name):
-    if not name:
+
+def normalize_name(text):
+    """Normalize business name."""
+    text = normalize_text(text)
+    words = [NAME_REPLACEMENTS.get(w, w) for w in text.split()]
+    return " ".join(words)
+
+
+def normalize_address(text):
+    """Normalize business address."""
+    text = normalize_text(text)
+    words = [ADDRESS_REPLACEMENTS.get(w, w) for w in text.split()]
+    return " ".join(words)
+
+
+def normalize_country(text):
+    """Normalize country text."""
+    if pd.isna(text):
         return ""
-    # Suffixes padded with word boundaries
-    suffixes = [
-        r'\binc\b', r'\bincorporated\b',
-        r'\bllc\b', r'\bl l c\b',
-        r'\bcorp\b', r'\bcorporation\b',
-        r'\bltd\b', r'\blimited\b',
-        r'\bpvt\b', r'\bprivate\b',
-        r'\bllp\b', r'\bco\b', r'\bcompany\b'
-    ]
-    pattern = '|'.join(suffixes)
-    # Remove suffixes
-    cleaned = re.sub(pattern, '', name)
-    # Cleanup extra spaces left behind
-    return re.sub(r'\s+', ' ', cleaned).strip()
 
-def normalize_name(name):
-    return remove_suffixes(clean_text(name))
+    return str(text).strip().lower()
 
-def normalize_address(address):
-    return clean_text(address)
 
-def is_non_latin(text):
+def add_normalized_columns(
+    df,
+    name_col="business_name",
+    address_col="business_address",
+    country_col="country",
+):
+    """
+    Return a copy of the dataframe with normalized columns.
+
+    Existing normalized columns are reused if already present.
+    """
+    df = df.copy()
+
+    if "name_norm" not in df.columns:
+        df["name_norm"] = df[name_col].apply(normalize_name)
+
+    if "address_norm" not in df.columns:
+        df["address_norm"] = df[address_col].apply(normalize_address)
+
+    if "country_norm" not in df.columns:
+        df["country_norm"] = df[country_col].apply(normalize_country)
+
+    return df
+
+
+def tokenize(text, min_len=MIN_TOKEN_LEN):
+    """Return tokens with length >= min_len."""
     if not text:
-        return False
-    # Check if text contains non-ascii characters (heuristically non-Latin for this dataset)
-    # A more precise check for non-Latin scripts (Tamil, Hindi, etc.):
-    return bool(re.search(r'[^\x00-\x7F]', text))
+        return []
+
+    return [token for token in str(text).split() if len(token) >= min_len]
+
+
+def get_name_tokens(text):
+    return tokenize(text)
+
+
+def get_address_tokens(text):
+    return tokenize(text)
