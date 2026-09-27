@@ -12,3 +12,7 @@ dataset/*.parquet
 dataset/.DS_Store
 .DS_Store
 dataset/
+
+blocking_index_cache.pkl
+
+code/business_entity_resolution/src/blocking_baseline_backup.py

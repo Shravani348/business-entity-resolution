@@ -29,7 +29,7 @@ class TokenBlocker:
         for token in address_tokens:
             self.address_index[(c_key, token)].add(entity_id)
 
-    def get_candidates(self, country, norm_name, norm_address):
+    def get_candidates(self, country, norm_name, norm_address, max_freq=10000, min_overlap=2):
         """Retrieve candidates for a given Source 1 record."""
         if not country:
             country = "UNKNOWN"
@@ -47,19 +47,18 @@ class TokenBlocker:
             all_keys.append(('address', (c_key, t)))
             
         # 2. Document Frequency Filter
-        # Skip tokens that are too frequent (e.g., appear in > 10,000 records)
+        # Skip tokens that are too frequent (e.g., appear in > max_freq records)
         # This dynamically drops top-tier stop words ('street', 'ltd', 'road') without needing a precomputed list.
-        MAX_FREQ = 10000
         valid_buckets = []
         
         for t_type, key in all_keys:
             if t_type == 'name' and key in self.name_index:
                 bucket = self.name_index[key]
-                if len(bucket) <= MAX_FREQ:
+                if len(bucket) <= max_freq:
                     valid_buckets.append(bucket)
             elif t_type == 'address' and key in self.address_index:
                 bucket = self.address_index[key]
-                if len(bucket) <= MAX_FREQ:
+                if len(bucket) <= max_freq:
                     valid_buckets.append(bucket)
                     
         # 3. Multi-token Overlap Logic
@@ -70,13 +69,13 @@ class TokenBlocker:
             # If the entity only has 1 usable token, we use it to avoid dropping single-word businesses.
             candidates.update(valid_buckets[0])
         else:
-            # If we have multiple tokens, require candidates to share at least 2 valid tokens
+            # If we have multiple tokens, require candidates to share at least min_overlap valid tokens
             from collections import Counter
             counts = Counter()
             for bucket in valid_buckets:
                 for eid in bucket:
                     counts[eid] += 1
             
-            candidates = {eid for eid, count in counts.items() if count >= 2}
+            candidates = {eid for eid, count in counts.items() if count >= min_overlap}
                 
         return candidates

@@ -1,6 +1,6 @@
 # ML Challenge 2026: Business Entity Resolution Solution Template
 
-**Team Name:** [Your Team Name]  
+**Team Name:** Aivora  
 **Team Members:** [List all team members]  
 **Submission Date:** [Date]
 
