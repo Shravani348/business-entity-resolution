@@ -23,15 +23,35 @@ def main():
     print(f"Loaded {len(df):,} pairs.")
 
     # ---------------------------------------------------------
-    # 1. Prepare TF-IDF corpus
+    # 0. Entity-level split
     # ---------------------------------------------------------
+    print("Performing entity-level split...")
+    
+    from sklearn.model_selection import train_test_split
+    
+    # Get unique entities
+    unique_s1_ids = df['s1_id'].unique()
+    
+    # Split entities (using seed=42 for reproducibility)
+    train_ids, test_ids = train_test_split(unique_s1_ids.tolist(), test_size=0.2, random_state=42)
+    
+    # Assign split
+    df['split'] = 'test'
+    df.loc[df['s1_id'].isin(train_ids), 'split'] = 'train'
+    
+    train_df = df[df['split'] == 'train']
+    print(f"Train pairs: {len(train_df):,}")
+    print(f"Test pairs: {len(df) - len(train_df):,}")
 
-    print("Preparing TF-IDF corpus...")
+    # ---------------------------------------------------------
+    # 1. Prepare TF-IDF corpus (from TRAIN only)
+    # ---------------------------------------------------------
+    print("Preparing TF-IDF corpus (train split only)...")
 
     normalized_names = pd.concat(
         [
-            df["s1_name"].fillna("").map(normalize_name),
-            df["other_name"].fillna("").map(normalize_name),
+            train_df["s1_name"].fillna("").map(normalize_name),
+            train_df["other_name"].fillna("").map(normalize_name),
         ],
         ignore_index=True,
     )
@@ -41,14 +61,13 @@ def main():
     ]
 
     print(
-        f"TF-IDF corpus size: "
+        f"TF-IDF training corpus size: "
         f"{len(normalized_names):,}"
     )
 
     # ---------------------------------------------------------
     # 2. Fit TF-IDF
     # ---------------------------------------------------------
-
     print("Fitting TF-IDF...")
 
     configure_tfidf(normalized_names)
@@ -56,9 +75,8 @@ def main():
     print("TF-IDF fitted.")
 
     # ---------------------------------------------------------
-    # 3. Extract features
+    # 3. Extract features (for both train and test)
     # ---------------------------------------------------------
-
     print("Extracting features...")
 
     feature_rows = []
@@ -76,7 +94,7 @@ def main():
 
         feature_rows.append(features)
 
-        if (i + 1) % 1000 == 0:
+        if (i + 1) % 5000 == 0:
             print(
                 f"Processed {i + 1:,} / "
                 f"{len(df):,}"
@@ -85,9 +103,8 @@ def main():
     features_df = pd.DataFrame(feature_rows)
 
     # ---------------------------------------------------------
-    # 4. Combine IDs, labels and features
+    # 4. Combine IDs, labels, split, and features
     # ---------------------------------------------------------
-
     output = pd.concat(
         [
             df[
@@ -96,6 +113,7 @@ def main():
                     "other_id",
                     "other_source",
                     "label",
+                    "split",
                 ]
             ].reset_index(drop=True),
 
@@ -107,7 +125,6 @@ def main():
     # ---------------------------------------------------------
     # 5. Save
     # ---------------------------------------------------------
-
     OUTPUT_PATH.parent.mkdir(
         parents=True,
         exist_ok=True,
@@ -122,11 +139,6 @@ def main():
     print(f"Saved: {OUTPUT_PATH}")
     print(f"Rows: {len(output):,}")
 
-    print("\nFeature columns:")
-
-    for column in features_df.columns:
-        print(f"  - {column}")
-
 
 if __name__ == "__main__":
-    main()
+    main()

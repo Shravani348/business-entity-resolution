@@ -5,380 +5,90 @@ from normalize import (
     get_name_tokens,
     get_address_tokens,
 )
-
-
-MIN_TOKEN_LEN = 3
-DEFAULT_MAX_BLOCK_SIZE = 2000
-
-
-def _explode_tokens(df, token_col, entity_id_col="entity_id"):
-    """
-    Convert token lists into one row per (country, token, entity_id).
-    """
-    rows = []
-
-    for _, row in df.iterrows():
-        country = row["country_norm"]
-        entity_id = row[entity_id_col]
-        tokens = row[token_col]
-
-        for token in tokens:
-            rows.append(
-                {
-                    "country_norm": country,
-                    "token": token,
-                    "entity_id": entity_id,
-                }
-            )
-
-    if not rows:
-        return pd.DataFrame(
-            columns=["country_norm", "token", "entity_id"]
-        )
-
-    return pd.DataFrame(rows)
-
-
-def _prune_common_tokens(
-    source1_tokens,
-    source2_tokens,
-    max_block_size=DEFAULT_MAX_BLOCK_SIZE,
-):
-    """
-    Remove extremely common blocks.
-
-    A block is defined by (country_norm, token).
-    If the block is too large on either side, it is removed.
-    """
-
-    s1_sizes = (
-        source1_tokens
-        .groupby(["country_norm", "token"])
-        .size()
-        .rename("s1_block_size")
-        .reset_index()
-    )
-
-    s2_sizes = (
-        source2_tokens
-        .groupby(["country_norm", "token"])
-        .size()
-        .rename("s2_block_size")
-        .reset_index()
-    )
-
-    block_sizes = s1_sizes.merge(
-        s2_sizes,
-        on=["country_norm", "token"],
-        how="outer",
-    )
-
-    block_sizes["s1_block_size"] = (
-        block_sizes["s1_block_size"].fillna(0)
-    )
-
-    block_sizes["s2_block_size"] = (
-        block_sizes["s2_block_size"].fillna(0)
-    )
-
-    valid_blocks = block_sizes[
-        (block_sizes["s1_block_size"] <= max_block_size)
-        & (block_sizes["s2_block_size"] <= max_block_size)
-    ][["country_norm", "token"]]
-
-    source1_tokens = source1_tokens.merge(
-        valid_blocks,
-        on=["country_norm", "token"],
-        how="inner",
-    )
-
-    source2_tokens = source2_tokens.merge(
-        valid_blocks,
-        on=["country_norm", "token"],
-        how="inner",
-    )
-
-    return source1_tokens, source2_tokens
-
-
-def _candidate_pairs_from_tokens(
-    source1_tokens,
-    source2_tokens,
-):
-    """
-    Generate candidate pairs by joining on country + token.
-    """
-
-    if source1_tokens.empty or source2_tokens.empty:
-        return pd.DataFrame(
-            columns=[
-                "source1_entity_id",
-                "candidate_entity_id",
-            ]
-        )
-
-    pairs = source1_tokens.merge(
-        source2_tokens,
-        on=["country_norm", "token"],
-        how="inner",
-        suffixes=("_s1", "_candidate"),
-    )
-
-    pairs = pairs.rename(
-        columns={
-            "entity_id_s1": "source1_entity_id",
-            "entity_id_candidate": "candidate_entity_id",
-        }
-    )
-
-    pairs = pairs[
-        [
-            "source1_entity_id",
-            "candidate_entity_id",
-        ]
-    ].drop_duplicates()
-
-    return pairs
-
-
-def block_on_name(
-    source1,
-    candidate_source,
-    max_block_size=DEFAULT_MAX_BLOCK_SIZE,
-):
-    """
-    Generate candidates using:
-
-        country + shared normalized business-name token
-    """
-
-    s1 = source1.copy()
-    candidate = candidate_source.copy()
-
-    s1["name_tokens"] = s1["name_norm"].apply(get_name_tokens)
-    candidate["name_tokens"] = candidate["name_norm"].apply(
-        get_name_tokens
-    )
-
-    s1_tokens = _explode_tokens(
-        s1,
-        token_col="name_tokens",
-    )
-
-    candidate_tokens = _explode_tokens(
-        candidate,
-        token_col="name_tokens",
-    )
-
-    s1_tokens, candidate_tokens = _prune_common_tokens(
-        s1_tokens,
-        candidate_tokens,
-        max_block_size=max_block_size,
-    )
-
-    pairs = _candidate_pairs_from_tokens(
-        s1_tokens,
-        candidate_tokens,
-    )
-
-    pairs["matched_on_name"] = True
-
-    return pairs
-
-
-def block_on_address(
-    source1,
-    candidate_source,
-    max_block_size=DEFAULT_MAX_BLOCK_SIZE,
-):
-    """
-    Generate candidates using:
-
-        country + shared normalized address token
-    """
-
-    s1 = source1.copy()
-    candidate = candidate_source.copy()
-
-    s1["address_tokens"] = s1["address_norm"].apply(
-        get_address_tokens
-    )
-
-    candidate["address_tokens"] = candidate["address_norm"].apply(
-        get_address_tokens
-    )
-
-    s1_tokens = _explode_tokens(
-        s1,
-        token_col="address_tokens",
-    )
-
-    candidate_tokens = _explode_tokens(
-        candidate,
-        token_col="address_tokens",
-    )
-
-    s1_tokens, candidate_tokens = _prune_common_tokens(
-        s1_tokens,
-        candidate_tokens,
-        max_block_size=max_block_size,
-    )
-
-    pairs = _candidate_pairs_from_tokens(
-        s1_tokens,
-        candidate_tokens,
-    )
-
-    pairs["matched_on_address"] = True
-
-    return pairs
+from blocking import TokenBlocker
 
 
 def generate_candidates(
     source1,
     source2,
     source3,
-    max_block_size=DEFAULT_MAX_BLOCK_SIZE,
+    max_block_size=10000,
 ):
     """
     Generate candidate pairs from Source 1 against Source 2 and Source 3.
 
     Blocking strategy:
-
         country + (shared name token OR shared address token)
-
-    Output columns:
-
-        source1_entity_id
-        candidate_entity_id
-        candidate_source
-        matched_on_name
-        matched_on_address
     """
-
-    # ---------------------------------------------------------
-    # 1. Normalize all sources using the shared normalization
-    # ---------------------------------------------------------
-
+    # 1. Normalize all sources
     source1 = add_normalized_columns(source1)
     source2 = add_normalized_columns(source2)
     source3 = add_normalized_columns(source3)
 
+    source1["name_tokens"] = source1["name_norm"].apply(get_name_tokens)
+    source1["address_tokens"] = source1["address_norm"].apply(get_address_tokens)
+
     all_results = []
 
-    # ---------------------------------------------------------
     # 2. Generate candidates for S1 -> S2 and S1 -> S3
-    # ---------------------------------------------------------
-
     for candidate_source_name, candidate_source in [
         ("S2", source2),
         ("S3", source3),
     ]:
+        if candidate_source.empty:
+            continue
 
-        # -------------------------
-        # Name blocking
-        # -------------------------
+        candidate_source["name_tokens"] = candidate_source["name_norm"].apply(get_name_tokens)
+        candidate_source["address_tokens"] = candidate_source["address_norm"].apply(get_address_tokens)
 
-        name_pairs = block_on_name(
-            source1,
-            candidate_source,
-            max_block_size=max_block_size,
-        )
+        # We instantiate one TokenBlocker but we will hack it to serve our dual purpose
+        # by passing max_freq into get_candidates
+        name_blocker = TokenBlocker()
+        address_blocker = TokenBlocker()
 
-        # -------------------------
-        # Address blocking
-        # -------------------------
+        # TokenBlocker expects strings (norm_name, norm_address) not lists
+        for country, name, eid in zip(candidate_source["country_norm"], candidate_source["name_norm"], candidate_source["entity_id"]):
+            name_blocker.index_record(eid, country, str(name) if pd.notna(name) else "", "")
+            
+        for country, addr, eid in zip(candidate_source["country_norm"], candidate_source["address_norm"], candidate_source["entity_id"]):
+            address_blocker.index_record(eid, country, "", str(addr) if pd.notna(addr) else "")
 
-        address_pairs = block_on_address(
-            source1,
-            candidate_source,
-            max_block_size=max_block_size,
-        )
+        rows = []
+        for country, name, addr, s1_id in zip(
+            source1["country_norm"], source1["name_norm"], source1["address_norm"], source1["entity_id"]
+        ):
+            c_str = str(country)
+            name_str = str(name) if pd.notna(name) else ""
+            addr_str = str(addr) if pd.notna(addr) else ""
+            
+            # Pass max_freq=10000, min_overlap=1, and top_k=5 to get_candidates
+            name_cands = name_blocker.get_candidates(c_str, name_str, "", max_freq=max_block_size, min_overlap=1, top_k=5)
+            addr_cands = address_blocker.get_candidates(c_str, "", addr_str, max_freq=max_block_size, min_overlap=1, top_k=5)
+            
+            all_cands = set(name_cands) | set(addr_cands)
+            for c_id in all_cands:
+                rows.append({
+                    "source1_entity_id": s1_id,
+                    "candidate_entity_id": c_id,
+                    "candidate_source": candidate_source_name,
+                    "matched_on_name": c_id in name_cands,
+                    "matched_on_address": c_id in addr_cands
+                })
 
-        # -----------------------------------------------------
-        # 3. UNION name + address candidates
-        # -----------------------------------------------------
+        if rows:
+            all_results.append(pd.DataFrame(rows))
 
-        name_pairs = name_pairs.assign(
-            matched_on_address=False
-        )
-
-        address_pairs = address_pairs.assign(
-            matched_on_name=False
-        )
-
-        combined = pd.concat(
-            [
-                name_pairs,
-                address_pairs,
-            ],
-            ignore_index=True,
-        )
-
-        # -----------------------------------------------------
-        # 4. Merge duplicate candidate pairs
-        #
-        # If the same pair was found through both blocks:
-        #
-        # matched_on_name    = True
-        # matched_on_address = True
-        # -----------------------------------------------------
-
-        combined = (
-            combined
-            .groupby(
-                [
-                    "source1_entity_id",
-                    "candidate_entity_id",
-                ],
-                as_index=False,
-            )
-            .agg(
-                matched_on_name=("matched_on_name", "max"),
-                matched_on_address=("matched_on_address", "max"),
-            )
-        )
-
-        combined["candidate_source"] = candidate_source_name
-
-        all_results.append(combined)
-
-    # ---------------------------------------------------------
-    # 5. Combine S2 and S3 candidates
-    # ---------------------------------------------------------
-
-    candidates = pd.concat(
-        all_results,
-        ignore_index=True,
-    )
-
-    # ---------------------------------------------------------
-    # 6. Final safety deduplication
-    # ---------------------------------------------------------
-
-    candidates = candidates.drop_duplicates(
-        subset=[
-            "source1_entity_id",
-            "candidate_entity_id",
-            "candidate_source",
-        ]
-    )
-
-    # ---------------------------------------------------------
-    # 7. Clean column order
-    # ---------------------------------------------------------
-
-    candidates = candidates[
-        [
+    if not all_results:
+        return pd.DataFrame(columns=[
             "source1_entity_id",
             "candidate_entity_id",
             "candidate_source",
             "matched_on_name",
             "matched_on_address",
-        ]
-    ]
+        ])
 
-    return candidates.reset_index(drop=True)
+    candidates = pd.concat(all_results, ignore_index=True)
+    return candidates
 
 
 def evaluate_recall(

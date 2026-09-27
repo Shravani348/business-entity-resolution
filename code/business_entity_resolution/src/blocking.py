@@ -54,7 +54,10 @@ class TokenBlocker:
         self,
         country,
         norm_name,
-        norm_address
+        norm_address,
+        max_freq=50000,
+        min_overlap=1,
+        top_k=5
     ):
         """Retrieve candidates for a given Source 1 record."""
 
@@ -84,14 +87,6 @@ class TokenBlocker:
         # ---------------------------------------------------------
         # 2. Document Frequency Filter
         # ---------------------------------------------------------
-        # Experimental safe version:
-        # Allow buckets up to 50,000 records.
-        #
-        # This is intentionally higher than the original 10,000
-        # threshold so that useful common tokens are not discarded.
-        # ---------------------------------------------------------
-        MAX_FREQ = 50000
-
         valid_buckets = []
 
         for t_type, key in all_keys:
@@ -99,13 +94,13 @@ class TokenBlocker:
             if t_type == 'name' and key in self.name_index:
                 bucket = self.name_index[key]
 
-                if len(bucket) <= MAX_FREQ:
+                if len(bucket) <= max_freq:
                     valid_buckets.append(bucket)
 
             elif t_type == 'address' and key in self.address_index:
                 bucket = self.address_index[key]
 
-                if len(bucket) <= MAX_FREQ:
+                if len(bucket) <= max_freq:
                     valid_buckets.append(bucket)
 
         # ---------------------------------------------------------
@@ -116,9 +111,10 @@ class TokenBlocker:
         if len(valid_buckets) == 0:
             return candidates
 
-        elif len(valid_buckets) == 1:
+        if len(valid_buckets) == 1 and min_overlap == 1:
             candidates.update(valid_buckets[0])
-
+            if top_k is not None:
+                return set(list(candidates)[:top_k])
         else:
             from collections import Counter
 
@@ -128,14 +124,17 @@ class TokenBlocker:
                 for entity_id in bucket:
                     counts[entity_id] += 1
 
-            # Experimental safe rule:
-            # A candidate only needs to appear in ONE usable bucket.
-            #
-            # This is deliberately permissive for the A/B test.
-            candidates = {
-                entity_id
-                for entity_id, count in counts.items()
-                if count >= 1
-            }
+            if top_k is not None:
+                candidates = {
+                    entity_id
+                    for entity_id, count in counts.most_common(top_k)
+                    if count >= min_overlap
+                }
+            else:
+                candidates = {
+                    entity_id
+                    for entity_id, count in counts.items()
+                    if count >= min_overlap
+                }
 
         return candidates
